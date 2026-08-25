@@ -1,6 +1,7 @@
 import time
 import tempfile
 import os
+import hashlib
 import streamlit as st
 import streamlit.components.v1 as components
 import py3Dmol
@@ -70,8 +71,8 @@ def render_3d_structure(cif_content: str, style: str = "ball-stick", width: int 
 
 
 # ========== 流式分析 ==========
-def stream_analysis(structure_text: str, placeholder):
-    """流式获取 AI 分析"""
+def stream_analysis(structure_text: str, placeholder) -> float:
+    """流式获取 AI 分析。分析完成后将结果写入 session_state。"""
     t0 = time.time()
 
     try:
@@ -79,7 +80,7 @@ def stream_analysis(structure_text: str, placeholder):
     except ValueError as e:
         placeholder.error(f"⚠️ {e}")
         placeholder.info("请确认已配置 API Key（本地: `.streamlit/secrets.toml` / 云端: Streamlit Cloud Settings → Secrets）")
-        return 0
+        return 0.0
 
     full_text = ""
     first_char = True
@@ -100,12 +101,16 @@ def stream_analysis(structure_text: str, placeholder):
             placeholder.markdown(display_text + "▌")
     except Exception as e:
         placeholder.error(f"分析失败: {type(e).__name__}: {e}")
+        st.session_state.ai_analysis_result = ""
         return time.time() - t0
 
     final_text = full_text.replace(r'\[', '$$').replace(r'\]', '$$')
     placeholder.markdown(final_text)
 
     elapsed = time.time() - t0
+    # 缓存结果，防止 rerun 时重复调用
+    st.session_state.ai_analysis_result = final_text
+    st.session_state.ai_analysis_elapsed = elapsed
     return elapsed
 
 
@@ -115,15 +120,34 @@ def preprocess_latex(text: str) -> str:
     return text
 
 
+# ========== Session State 初始化 ==========
+if "current_file_hash" not in st.session_state:
+    st.session_state.current_file_hash = ""
+if "ai_analysis_result" not in st.session_state:
+    st.session_state.ai_analysis_result = ""
+if "ai_analysis_elapsed" not in st.session_state:
+    st.session_state.ai_analysis_elapsed = 0.0
+
+
 # ========== 主界面 ==========
 st.markdown("欢迎！上传 CIF 文件，AI 将为你解析晶体结构。")
 
 uploaded = st.file_uploader("上传 CIF 文件", type=["cif"])
 
 if uploaded:
+    # 计算文件 hash 用于判断是否是新文件
+    file_bytes = uploaded.getvalue()
+    file_hash = hashlib.md5(file_bytes).hexdigest()
+
+    # 如果上传了新文件，清空旧缓存
+    if file_hash != st.session_state.current_file_hash:
+        st.session_state.current_file_hash = file_hash
+        st.session_state.ai_analysis_result = ""
+        st.session_state.ai_analysis_elapsed = 0.0
+
     with st.spinner("解析晶体结构中..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".cif") as tmp:
-            tmp.write(uploaded.getvalue())
+            tmp.write(file_bytes)
             tmp_path = tmp.name
 
         try:
@@ -133,8 +157,7 @@ if uploaded:
                 "basic_info": parser.get_basic_info(),
                 "structure_text": parser.export_for_llm(),
             }
-            # 保存 CIF 原始内容用于 3D 可视化
-            cif_content = uploaded.getvalue().decode('utf-8')
+            cif_content = file_bytes.decode('utf-8')
         except Exception as e:
             st.error(f"解析失败: {type(e).__name__}: {e}")
             st.stop()
@@ -158,6 +181,7 @@ if uploaded:
             "显示样式",
             ["ball-stick (球棍)", "spacefill (空间填充)", "stick (棍状)", "line (线框)"],
             index=0,
+            key="style_selectbox",
         )
         style_map = {
             "ball-stick (球棍)": "ball-stick",
@@ -167,27 +191,34 @@ if uploaded:
         }
         selected_style = style_map[style_option]
 
-        with st.spinner("生成 3D 视图..."):
-            try:
-                html_3d = render_3d_structure(cif_content, style=selected_style, width=380, height=380)
-                components.html(html_3d, height=400, scrolling=False)
-            except Exception as e:
-                st.error(f"3D 视图生成失败: {type(e).__name__}: {e}")
+        try:
+            html_3d = render_3d_structure(cif_content, style=selected_style, width=380, height=380)
+            components.html(html_3d, height=400, scrolling=False)
+        except Exception as e:
+            st.error(f"3D 视图生成失败: {type(e).__name__}: {e}")
 
     with col2:
         st.subheader("📝 AI 结构分析")
         analysis_placeholder = st.empty()
-        analysis_placeholder.info("🤖 AI 正在分析晶体结构，请稍候...")
 
-    with st.expander("🔍 查看原始结构数据（Debug）"):
-        st.text(structure_text)
+        # 判断是否已有缓存结果
+        if st.session_state.ai_analysis_result:
+            # 直接显示缓存，不重新调用 LLM
+            analysis_placeholder.markdown(st.session_state.ai_analysis_result)
+            st.caption(f"⏱️ AI 分析总用时 {st.session_state.ai_analysis_elapsed:.1f} 秒（已缓存）")
+        else:
+            # 首次分析
+            analysis_placeholder.info("🤖 AI 正在分析晶体结构，请稍候...")
 
-    elapsed = stream_analysis(structure_text, analysis_placeholder)
-    if elapsed > 0:
-        st.caption(f"⏱️ AI 分析总用时 {elapsed:.1f} 秒")
+            with st.expander("🔍 查看原始结构数据（Debug）"):
+                st.text(structure_text)
+
+            elapsed = stream_analysis(structure_text, analysis_placeholder)
+            if elapsed > 0:
+                st.caption(f"⏱️ AI 分析总用时 {elapsed:.1f} 秒")
 
     st.subheader("💬 追问")
-    question = st.text_input("对结构提问（如：DMF 是否配位到 Cu？）")
+    question = st.text_input("对结构提问（如：DMF 是否配位到 Cu？）", key="chat_input")
     if question:
         with st.spinner("思考中..."):
             try:
