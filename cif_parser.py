@@ -29,7 +29,6 @@ class CIFParser:
         }
     
     def get_symmetry_operations(self, max_ops: int = 10) -> list:
-        """获取空间群的部分对称操作（用于分析）"""
         try:
             ops = self.sga.get_symmetry_operations()
             return [str(op) for op in ops[:max_ops]]
@@ -37,13 +36,11 @@ class CIFParser:
             return []
     
     def infer_oxidation_states(self) -> dict:
-        """基于电中性和常见氧化态推断各元素氧化态"""
         from collections import Counter
         
         elements = [str(site.specie) for site in self.structure]
         counts = Counter(elements)
         
-        # 常见元素氧化态表（简化版）
         common_states = {
             'O': -2, 'S': -2, 'Se': -2, 'Te': -2,
             'F': -1, 'Cl': -1, 'Br': -1, 'I': -1,
@@ -59,7 +56,6 @@ class CIFParser:
             'La': 3, 'Ce': [3, 4],
         }
         
-        # 计算已知阴离子的总负电荷
         known_negative = 0
         unknown_elements = {}
         for elem, count in counts.items():
@@ -71,7 +67,6 @@ class CIFParser:
             else:
                 unknown_elements[elem] = count
         
-        # 简单推断：假设化合物电中性，正电荷总和 = -负电荷总和
         result = {}
         total_positive = -known_negative
         
@@ -93,20 +88,17 @@ class CIFParser:
         return result
     
     def get_coordination(self, max_sites: int = 10) -> list:
-        """配位环境分析，包含键角"""
         cnn = CrystalNN()
         results = []
         for i, site in enumerate(self.structure[:max_sites]):
             try:
                 nn = cnn.get_nn_info(self.structure, i)
-                # 按距离排序，取最近 6 个邻居
                 neighbors = sorted(
                     [{"element": str(n["site"].specie), "distance": round(site.distance(n["site"]), 3), "index": n["site_index"]}
                      for n in nn],
                     key=lambda x: x["distance"]
                 )[:6]
                 
-                # 计算键角（取前 3 个邻居之间的夹角）
                 angles = []
                 if len(neighbors) >= 3:
                     for a in range(min(3, len(neighbors))):
@@ -126,8 +118,8 @@ class CIFParser:
                     "site": f"{site.specie}{i}",
                     "coords": [round(x, 4) for x in site.frac_coords],
                     "coordination_num": len(nn),
-                    "neighbors": neighbors[:4],  # 只显示最近 4 个
-                    "angles": angles[:6],  # 只显示前 6 个键角
+                    "neighbors": neighbors[:4],
+                    "angles": angles[:6],
                 })
             except Exception:
                 continue
@@ -148,7 +140,6 @@ class CIFParser:
         return sorted(bonds, key=lambda x: x["distance"])[:max_pairs]
     
     def export_for_llm(self, max_length: int = 4000) -> str:
-        """导出为 LLM 友好的详细文本格式"""
         info = self.get_basic_info()
         coord = self.get_coordination()
         bonds = self.get_bond_lengths()
@@ -165,9 +156,7 @@ Crystal System: {info['crystal_system']}
 Lattice: a={info['lattice']['a']:.4f}Å, b={info['lattice']['b']:.4f}Å, c={info['lattice']['c']:.4f}Å
 Angles: α={info['lattice']['alpha']:.2f}°, β={info['lattice']['beta']:.2f}°, γ={info['lattice']['gamma']:.2f}°
 Volume: {info['lattice']['volume']:.2f}Å³
-Sites: {info['num_sites']}, Density: {info['density']:.3f} g/cm³
-
-## Oxidation State Inference
+Sites: {info['num_sites']}, Density: {info['density']:.3f} g/cm³�?
 """
         for elem, state in ox_states.items():
             text += f"  {elem}: {state}\n"
