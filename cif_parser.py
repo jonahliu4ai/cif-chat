@@ -7,7 +7,16 @@ class CIFParser:
     def __init__(self, cif_path: str):
         self.structure = Structure.from_file(cif_path)
         self.sga = SpacegroupAnalyzer(self.structure)
-    
+
+    @staticmethod
+    def _get_site_element(site):
+        """安全地获取位点的元素符号，处理部分占据的情况。"""
+        if hasattr(site, "specie"):
+            return str(site.specie)
+        # 部分占据位点使用 species (Composition)
+        elements = list(site.species.elements)
+        return str(elements[0]) if elements else "?"
+
     def get_basic_info(self) -> dict:
         return {
             "formula": self.structure.formula,
@@ -27,20 +36,20 @@ class CIFParser:
             "num_sites": len(self.structure),
             "density": self.structure.density,
         }
-    
+
     def get_symmetry_operations(self, max_ops: int = 10) -> list:
         try:
             ops = self.sga.get_symmetry_operations()
             return [str(op) for op in ops[:max_ops]]
         except Exception:
             return []
-    
+
     def infer_oxidation_states(self) -> dict:
         from collections import Counter
-        
-        elements = [str(site.specie) for site in self.structure]
+
+        elements = [self._get_site_element(site) for site in self.structure]
         counts = Counter(elements)
-        
+
         common_states = {
             'O': -2, 'S': -2, 'Se': -2, 'Te': -2,
             'F': -1, 'Cl': -1, 'Br': -1, 'I': -1,
@@ -55,7 +64,7 @@ class CIFParser:
             'Mn': [2, 4], 'Cr': 3,
             'La': 3, 'Ce': [3, 4],
         }
-        
+
         known_negative = 0
         unknown_elements = {}
         for elem, count in counts.items():
@@ -66,10 +75,10 @@ class CIFParser:
                     unknown_elements[elem] = count
             else:
                 unknown_elements[elem] = count
-        
+
         result = {}
         total_positive = -known_negative
-        
+
         if len(unknown_elements) == 1:
             elem, count = list(unknown_elements.items())[0]
             inferred = total_positive / count
@@ -84,9 +93,9 @@ class CIFParser:
                         result[elem] = states
                 else:
                     result[elem] = "?"
-        
+
         return result
-    
+
     def get_coordination(self, max_sites: int = 10) -> list:
         cnn = CrystalNN()
         results = []
@@ -94,11 +103,11 @@ class CIFParser:
             try:
                 nn = cnn.get_nn_info(self.structure, i)
                 neighbors = sorted(
-                    [{"element": str(n["site"].specie), "distance": round(site.distance(n["site"]), 3), "index": n["site_index"]}
+                    [{"element": self._get_site_element(n["site"]), "distance": round(site.distance(n["site"]), 3), "index": n["site_index"]}
                      for n in nn],
                     key=lambda x: x["distance"]
                 )[:6]
-                
+
                 angles = []
                 if len(neighbors) >= 3:
                     for a in range(min(3, len(neighbors))):
@@ -108,14 +117,14 @@ class CIFParser:
                                     neighbors[a]["index"], i, neighbors[b]["index"]
                                 )
                                 angles.append({
-                                    "pair": f"{neighbors[a]['element']}-{site.specie}-{neighbors[b]['element']}",
+                                    "pair": f"{neighbors[a]['element']}-{self._get_site_element(site)}-{neighbors[b]['element']}",
                                     "angle": round(angle, 1)
                                 })
                             except Exception:
                                 pass
-                
+
                 results.append({
-                    "site": f"{site.specie}{i}",
+                    "site": f"{self._get_site_element(site)}{i}",
                     "coords": [round(x, 4) for x in site.frac_coords],
                     "coordination_num": len(nn),
                     "neighbors": neighbors[:4],
@@ -124,7 +133,7 @@ class CIFParser:
             except Exception:
                 continue
         return results
-    
+
     def get_bond_lengths(self, max_pairs: int = 20) -> list:
         bonds = []
         seen = set()
@@ -132,20 +141,20 @@ class CIFParser:
             for j in range(i + 1, min(len(self.structure), 20)):
                 d = self.structure.get_distance(i, j)
                 if d < 3.0:
-                    pair = tuple(sorted([str(self.structure[i].specie), str(self.structure[j].specie)]))
+                    pair = tuple(sorted([self._get_site_element(self.structure[i]), self._get_site_element(self.structure[j])]))
                     key = (pair, round(d, 2))
                     if key not in seen:
                         seen.add(key)
                         bonds.append({"pair": f"{pair[0]}-{pair[1]}", "distance": round(d, 3)})
         return sorted(bonds, key=lambda x: x["distance"])[:max_pairs]
-    
+
     def export_for_llm(self, max_length: int = 4000) -> str:
         info = self.get_basic_info()
         coord = self.get_coordination()
         bonds = self.get_bond_lengths()
         ox_states = self.infer_oxidation_states()
         sym_ops = self.get_symmetry_operations()
-        
+
         text = f"""Crystal Structure Data:
 
 ## Basic Information
@@ -156,11 +165,11 @@ Crystal System: {info['crystal_system']}
 Lattice: a={info['lattice']['a']:.4f}Å, b={info['lattice']['b']:.4f}Å, c={info['lattice']['c']:.4f}Å
 Angles: α={info['lattice']['alpha']:.2f}°, β={info['lattice']['beta']:.2f}°, γ={info['lattice']['gamma']:.2f}°
 Volume: {info['lattice']['volume']:.2f}Å³
-Sites: {info['num_sites']}, Density: {info['density']:.3f} g/cm³�?
+Sites: {info['num_sites']}, Density: {info['density']:.3f} g/cm³
 """
         for elem, state in ox_states.items():
             text += f"  {elem}: {state}\n"
-        
+
         text += f"\n## Coordination Environment (first {len(coord)} sites)\n"
         for c in coord:
             text += f"\n  {c['site']} at ({', '.join(map(str, c['coords']))})\n"
@@ -168,17 +177,17 @@ Sites: {info['num_sites']}, Density: {info['density']:.3f} g/cm³�?
             text += f"  Neighbors: " + ", ".join([f"{n['element']}@{n['distance']}Å" for n in c['neighbors']]) + "\n"
             if c['angles']:
                 text += f"  Key Angles: " + ", ".join([f"{a['pair']}={a['angle']}°" for a in c['angles']]) + "\n"
-        
+
         text += f"\n## Selected Bond Lengths (<3.0Å, top {len(bonds)}):\n"
         for b in bonds:
             text += f"  {b['pair']}: {b['distance']}Å\n"
-        
+
         if sym_ops:
             text += f"\n## Representative Symmetry Operations (first {len(sym_ops)}):\n"
             for op in sym_ops:
                 text += f"  {op}\n"
-        
+
         if len(text) > max_length:
             text = text[:max_length] + "\n... (truncated)"
-        
+
         return text
