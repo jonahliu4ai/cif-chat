@@ -1,11 +1,33 @@
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
+import py3Dmol
 
 API_URL = "http://localhost:8000"
 
 st.set_page_config(page_title="CIF-Chat", layout="wide")
 st.title("🔬 CIF-Chat: AI 晶体结构解析")
+
+
+def render_3d_structure(cif_content: str, style: str = "ball-stick", width: int = 400, height: int = 400) -> str:
+    """使用 py3Dmol 生成 CIF 结构的 3D 视图 HTML"""
+    view = py3Dmol.view(data=cif_content, format='cif', width=width, height=height)
+
+    if style == "ball-stick":
+        view.setStyle({'sphere': {'radius': 0.3}, 'stick': {'radius': 0.15}})
+    elif style == "spacefill":
+        view.setStyle({'sphere': {'radius': 0.8}})
+    elif style == "stick":
+        view.setStyle({'stick': {'radius': 0.2}})
+    elif style == "line":
+        view.setStyle({'line': {}})
+    else:
+        view.setStyle({'sphere': {'radius': 0.3}})
+
+    view.zoomTo()
+    return view._make_html()
+
 
 def stream_analysis(structure_text: str, placeholder):
     """流式获取 AI 分析，按服务器原始 chunk 边界读取"""
@@ -15,19 +37,17 @@ def stream_analysis(structure_text: str, placeholder):
         json={"structure_text": structure_text},
         stream=True,
     )
-    
+
     full_text = ""
     first_char = True
-    
-    # 按服务器发送的原始 chunk 边界读取（不强制拆成 1 字节）
-    # OpenAI 流式通常每个 chunk 1-4 个字符，中文可能是 1-2 个字
+
     for chunk in resp.iter_content(chunk_size=None):
         if chunk:
             try:
                 text = chunk.decode('utf-8')
             except UnicodeDecodeError:
                 continue
-            
+
             if text:
                 if first_char:
                     first_char = False
@@ -37,10 +57,10 @@ def stream_analysis(structure_text: str, placeholder):
                 full_text += text
                 display_text = full_text.replace(r'\[', '$$').replace(r'\]', '$$')
                 placeholder.markdown(display_text + "▌")
-    
+
     final_text = full_text.replace(r'\[', '$$').replace(r'\]', '$$')
     placeholder.markdown(final_text)
-    
+
     elapsed = time.time() - t0
     return elapsed
 
@@ -55,14 +75,16 @@ if uploaded:
     with st.spinner("解析晶体结构中..."):
         files = {"file": (uploaded.name, uploaded.getvalue(), "chemical/x-cif")}
         resp = requests.post(f"{API_URL}/api/parse", files=files, timeout=15)
-    
+
     if resp.status_code != 200:
         st.error(f"解析失败: {resp.text}")
         st.stop()
-    
+
     data = resp.json()
     structure_text = data["structure_text"]
-    
+    # 保留 CIF 原始内容用于 3D 可视化
+    cif_content = uploaded.getvalue().decode('utf-8')
+
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("📋 基本信息")
@@ -71,18 +93,40 @@ if uploaded:
         st.write(f"**空间群**: {info['space_group']}")
         st.write(f"**晶胞**: {info['lattice']['a']:.3f} × {info['lattice']['b']:.3f} × {info['lattice']['c']:.3f} Å")
         st.write(f"**体积**: {info['lattice']['volume']:.1f} Å³")
-    
+
+        # ===== 3D 结构可视化 Panel =====
+        st.subheader("🧬 3D 结构视图")
+        style_option = st.selectbox(
+            "显示样式",
+            ["ball-stick (球棍)", "spacefill (空间填充)", "stick (棍状)", "line (线框)"],
+            index=0,
+        )
+        style_map = {
+            "ball-stick (球棍)": "ball-stick",
+            "spacefill (空间填充)": "spacefill",
+            "stick (棍状)": "stick",
+            "line (线框)": "line",
+        }
+        selected_style = style_map[style_option]
+
+        with st.spinner("生成 3D 视图..."):
+            try:
+                html_3d = render_3d_structure(cif_content, style=selected_style, width=380, height=380)
+                components.html(html_3d, height=400, scrolling=False)
+            except Exception as e:
+                st.error(f"3D 视图生成失败: {type(e).__name__}: {e}")
+
     with col2:
         st.subheader("📝 AI 结构分析")
         analysis_placeholder = st.empty()
         analysis_placeholder.info("🤖 AI 正在分析晶体结构，请稍候...（长 prompt 可能需要 10-30 秒首字响应）")
-    
+
     with st.expander("🔍 查看原始结构数据（Debug）"):
         st.text(structure_text)
-    
+
     elapsed = stream_analysis(structure_text, analysis_placeholder)
     st.caption(f"⏱️ AI 分析总用时 {elapsed:.1f} 秒")
-    
+
     st.subheader("💬 追问")
     question = st.text_input("对结构提问（如：DMF 是否配位到 Cu？）")
     if question:

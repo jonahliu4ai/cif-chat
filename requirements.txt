@@ -4,3 +4,5 @@ streamlit
 pymatgen
 openai
 python-dotenv
+py3Dmol
+python-dotenv
