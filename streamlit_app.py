@@ -12,14 +12,52 @@ st.set_page_config(page_title="CIF-Chat", layout="wide")
 st.title("🔬 CIF-Chat: AI 晶体结构解析")
 
 
+# ========== 访问控制 ==========
+def check_access():
+    """检查用户是否已通过密码验证"""
+    # 从 secrets 读取访问密码
+    try:
+        access_pwd = st.secrets.get("access", {}).get("password", "")
+    except Exception:
+        access_pwd = ""
+    
+    # 如果没有设置密码，直接放行（方便测试）
+    if not access_pwd:
+        return True
+    
+    # 检查 session state
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if not st.session_state.authenticated:
+        with st.form("login"):
+            st.markdown("### 🔒 请输入访问密码")
+            pwd_input = st.text_input("密码", type="password")
+            submitted = st.form_submit_button("进入")
+            if submitted:
+                if pwd_input == access_pwd:
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("密码错误")
+        st.stop()
+    
+    return True
+
+
+check_access()
+
+
+# ========== 流式分析 ==========
 def stream_analysis(structure_text: str, placeholder):
-    """流式获取 AI 分析，直接调用 LLM，无需后端"""
+    """流式获取 AI 分析"""
     t0 = time.time()
     
     try:
         llm = LLMClient()
     except ValueError as e:
         placeholder.error(f"⚠️ {e}")
+        placeholder.info("请确认已配置 API Key（本地: `.streamlit/secrets.toml` / 云端: Streamlit Cloud Settings → Secrets）")
         return 0
     
     full_text = ""
@@ -57,10 +95,11 @@ def preprocess_latex(text: str) -> str:
 
 
 # ========== 主界面 ==========
+st.markdown("欢迎！上传 CIF 文件，AI 将为你解析晶体结构。")
+
 uploaded = st.file_uploader("上传 CIF 文件", type=["cif"])
 
 if uploaded:
-    # 解析 CIF（直接在前端完成）
     with st.spinner("解析晶体结构中..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".cif") as tmp:
             tmp.write(uploaded.getvalue())
@@ -81,7 +120,6 @@ if uploaded:
     
     structure_text = data["structure_text"]
     
-    # 显示基本信息
     col1, col2 = st.columns([1, 2])
     with col1:
         st.subheader("📋 基本信息")
@@ -99,12 +137,10 @@ if uploaded:
     with st.expander("🔍 查看原始结构数据（Debug）"):
         st.text(structure_text)
     
-    # 流式调用 LLM
     elapsed = stream_analysis(structure_text, analysis_placeholder)
     if elapsed > 0:
         st.caption(f"⏱️ AI 分析总用时 {elapsed:.1f} 秒")
     
-    # 追问
     st.subheader("💬 追问")
     question = st.text_input("对结构提问（如：DMF 是否配位到 Cu？）")
     if question:
